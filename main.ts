@@ -12,8 +12,8 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
@@ -24,6 +24,38 @@ mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
 if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+
+// Shadow Ledger's own pre-flight check, added for this entry: before the dossier is
+// written, walk what was just copied into the output and refuse to hand in a broken
+// build. The game must ship its index.html, and every copied file is counted with its
+// size so the manifest below can prove the output is complete, not a partial copy.
+function listCopiedFiles(root: string, dir: string): { path: string; bytes: number }[] {
+  const found: { path: string; bytes: number }[] = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) found.push(...listCopiedFiles(root, full));
+    else found.push({ path: relative(root, full), bytes: statSync(full).size });
+  }
+  return found.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+const copiedGame = listCopiedFiles(join(out, 'game'), join(out, 'game'));
+if (!copiedGame.some((f) => f.path === 'index.html')) {
+  throw new Error('Shadow Ledger: game/index.html is missing from the output; refusing to hand in.');
+}
+const copiedShots = existsSync(join(out, 'screenshots'))
+  ? listCopiedFiles(join(out, 'screenshots'), join(out, 'screenshots'))
+  : [];
+const manifest = {
+  game: 'Shadow Ledger',
+  entrypoint: 'game/index.html',
+  game_files: copiedGame.length,
+  game_bytes: copiedGame.reduce((sum, f) => sum + f.bytes, 0),
+  screenshots: copiedShots.map((f) => f.path),
+  files: [...copiedGame, ...copiedShots],
+};
+writeFileSync(join(out, 'entry-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+console.log(`Shadow Ledger: ${manifest.game_files} game files, ${manifest.game_bytes} bytes, ${manifest.screenshots.length} screenshots.`);
 
 // The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
 // scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
